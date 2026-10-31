@@ -50,7 +50,7 @@ messages, exception messages or rejected values. Future custom constraints use
 MVC validation tests disable filters only in their test configuration and register
 test-only endpoints; security configuration tests run with the real filters enabled.
 
-# Security baseline (milestone 6 in progress)
+# Security baseline
 
 Only GET `/api/v1/auth/csrf` is permitted anonymously. All other routes are denied, including for authenticated callers,
 until explicit permissions are added with each feature. Form login, HTTP Basic,
@@ -109,3 +109,43 @@ Run the API and unit tests without database credentials:
 For full verification including MariaDB repository tests, set the development/test
 database environment variables (`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`) and run
 `./mvnw verify`.
+
+# Password encoding and policy
+
+Use `PasswordService.encodeNewPassword(rawPassword)` for new or changed passwords,
+and `PasswordService.matches(rawPassword, storedHash)` for verification. Never pass
+raw passwords to the user entity or repository. Signup/login endpoints do not yet
+exist; this milestone provides the components they will use.
+
+New passwords must contain 12 to 128 Unicode code points. The 12-character minimum
+is a product tradeoff for lower signup friction; it is below NIST's 15-character
+minimum for password-only authentication. Spaces, punctuation and
+Unicode are accepted without uppercase/digit/symbol requirements. No trimming,
+case conversion, Unicode normalization or truncation occurs. Malformed Unicode is
+rejected to prevent different inputs being converted to replacement characters.
+Verification bounds input size but does not reapply the current minimum length,
+so a future minimum-length increase need not lock out older accounts.
+
+`PasswordConfig` registers Spring Security's `Argon2PasswordEncoder` using Argon2id
+with a 16-byte random salt, 32-byte hash, 19 MiB memory, two iterations and one lane.
+The stored PHC string includes the algorithm, version, parameters and salt. It fits
+the existing `password_hash VARCHAR(255)` column; no migration is required. Encoding
+the same password twice produces independently salted hashes.
+
+Bouncy Castle `bcprov-jdk18on` 1.86 supplies Argon2's runtime implementation. Its
+version is pinned explicitly because this Boot parent does not manage it.
+
+References: [Spring password storage](https://docs.spring.io/spring-security/reference/7.0/features/authentication/password-storage.html),
+[OWASP Argon2id guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html),
+[Bouncy Castle releases](https://www.bouncycastle.org/download/bouncy-castle-java/).
+Benchmark hashing on the intended deployment hardware before public release.
+
+Deferred to milestone 23: choose and implement a compromised-password checker
+before exposing account registration publicly. Length acceptance alone does not
+establish password strength or detect common/compromised passwords.
+
+Password tests run without database variables:
+
+```sh
+./mvnw -Dtest=PasswordPolicyTests,PasswordServiceTests test
+```
