@@ -47,14 +47,63 @@ Field codes are `REQUIRED`, `INVALID_EMAIL`, `INVALID_SIZE`, `INVALID_FORMAT`, a
 messages, exception messages or rejected values. Future custom constraints use
 `INVALID_VALUE` until explicitly assigned a safe public code/message.
 
-Security-filter 401/403 responses are separate work for milestone 6. MVC tests
-disable filters only in their test configuration and register test-only endpoints;
-they do not change the application's security configuration.
+MVC validation tests disable filters only in their test configuration and register
+test-only endpoints; security configuration tests run with the real filters enabled.
+
+# Security baseline (milestone 6 in progress)
+
+Only GET `/api/v1/auth/csrf` is permitted anonymously. All other routes are denied, including for authenticated callers,
+until explicit permissions are added with each feature. Form login, HTTP Basic,
+default logout, and saved-request caching are disabled. CSRF stays enabled.
+
+Security failures use the same `application/problem+json` structure as controller
+errors, via dedicated filter handlers:
+
+| HTTP status | Code | Meaning |
+| --- | --- | --- |
+| 401 | `AUTHENTICATION_REQUIRED` | Authentication is required. |
+| 403 | `ACCESS_DENIED` | An authenticated caller lacks route permission. |
+| 403 | `CSRF_INVALID` | The CSRF token is missing or invalid, even for an anonymous caller. |
+
+Responses have `Cache-Control: no-store`, contain no request values or exception
+details, and do not redirect to HTML login/error pages. A valid CSRF token does not
+grant authorization; after passing CSRF, an anonymous write to an unlisted route
+receives 401, while an authenticated write receives 403.
+
+GET `/api/v1/auth/csrf` returns HTTP 200 with `Cache-Control: no-store`:
+
+```json
+{"token": "generated-request-token", "header_name": "X-CSRF-TOKEN"}
+```
+
+Retain the session cookie returned by the server and send it with the token in the
+named header on POST/PATCH/DELETE requests. Tokens from another session, or sent
+without the original session, fail. Fetching a token does not log in the caller or
+grant route permission. Re-fetching in an existing session does not invalidate its
+previously returned tokens. Spring masks request tokens, so their strings can
+differ between fetches even when they correspond to the same stored session token.
+
+Sessions currently use servlet memory: an app restart or expired session requires
+a new token and session. JDBC sessions remain deferred until their tables are
+migrated. Fetch a fresh token after login/logout once those features are added.
+For local HTTP clients, set `SESSION_COOKIE_SECURE=false`; retain secure cookies
+for production HTTPS. Keep CSRF tokens and cookies out of logs and URLs.
+
+Manual local check (application running on port 8080):
+
+```sh
+curl -i -c /tmp/learningq-dev-cookies.txt http://localhost:8080/api/v1/auth/csrf
+```
+
+The cookie file contains session credentials; remove it when finished. No write
+endpoint is authorized yet. The tests submit the returned token to a denied route:
+401 after passing CSRF demonstrates token acceptance, while missing/wrong-session
+tokens produce 403 `CSRF_INVALID`. No successful signup or login is implied.
 
 Run the API and unit tests without database credentials:
 
 ```sh
-./mvnw -Dtest=ApiExceptionHandlerTests,UserTests,EmailNormalizerTests test
+./mvnw -Dtest=SecurityConfigTests,ApiExceptionHandlerTests,UserTests,EmailNormalizerTests test
 ```
 
 For full verification including MariaDB repository tests, set the development/test

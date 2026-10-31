@@ -1,6 +1,5 @@
 package com.codencode.learningq.api.error;
 
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -23,6 +22,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+
+import static com.codencode.learningq.api.error.ApiProblems.problem;
 
 @RestControllerAdvice
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
@@ -71,8 +72,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Object> handleUnexpectedException(Exception exception, WebRequest request) throws Exception {
-        // Authentication and authorization are handled by the security filter chain
-        // in the next milestone, rather than converted to controller errors here.
+        // Authentication and authorization are handled by the security filter chain,
+        // rather than converted to controller errors here.
         if (exception instanceof AuthenticationException || exception instanceof AccessDeniedException) {
             throw exception;
         }
@@ -80,13 +81,6 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return super.handleExceptionInternal(exception,
                 problem(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "An unexpected error occurred."),
                 new HttpHeaders(), HttpStatus.INTERNAL_SERVER_ERROR, request);
-    }
-
-    private static ProblemDetail problem(HttpStatusCode status, String code, String detail) {
-        ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
-        problem.setType(URI.create("urn:learningq:error:" + code.toLowerCase(Locale.ROOT).replace('_', '-')));
-        problem.setProperty("code", code);
-        return problem;
     }
 
     private static FieldViolation violation(ObjectError error) {
