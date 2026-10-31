@@ -18,6 +18,7 @@ public class SecurityConfig {
         return http
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/signup").permitAll()
                         .anyRequest().denyAll())
                 .csrf(Customizer.withDefaults())
                 .exceptionHandling(exceptions -> exceptions

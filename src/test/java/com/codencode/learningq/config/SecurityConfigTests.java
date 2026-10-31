@@ -67,7 +67,7 @@ class SecurityConfigTests {
         CsrfResponse token = tokenFrom(result);
         System.out.println("----->" + token);
 
-        // No write route is public yet: 401 (rather than CSRF_INVALID/403)
+        // This method/path is still denied: 401 (rather than CSRF_INVALID/403)
         // proves the real endpoint token passed CSRF and reached authorization.
         mvc.perform(post("/api/v1/auth/csrf").session(sessionFrom(result))
                         .header(token.headerName(), token.token()))

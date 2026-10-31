@@ -13,7 +13,7 @@ Request and response DTO properties use snake_case JSON names. Unknown JSON
 properties are rejected. Future controllers should accept dedicated DTOs using
 `@Valid @RequestBody`; apply Jakarta constraints to the DTO fields. Do not expose
 JPA entities or include credentials in DTO `toString()` implementations or logs.
-Endpoint-specific DTOs arrive with their features; no signup endpoint exists yet.
+Signup uses dedicated request/response DTOs; future endpoints should do the same.
 
 Controller errors use `application/problem+json`, with standard `type`, `title`,
 `status`, and `detail` fields plus a stable `code`. Validation failures also include
@@ -52,7 +52,8 @@ test-only endpoints; security configuration tests run with the real filters enab
 
 # Security baseline
 
-Only GET `/api/v1/auth/csrf` is permitted anonymously. All other routes are denied, including for authenticated callers,
+GET `/api/v1/auth/csrf` and POST `/api/v1/auth/signup` are permitted anonymously.
+All other routes are denied, including for authenticated callers,
 until explicit permissions are added with each feature. Form login, HTTP Basic,
 default logout, and saved-request caching are disabled. CSRF stays enabled.
 
@@ -95,10 +96,11 @@ Manual local check (application running on port 8080):
 curl -i -c /tmp/learningq-dev-cookies.txt http://localhost:8080/api/v1/auth/csrf
 ```
 
-The cookie file contains session credentials; remove it when finished. No write
-endpoint is authorized yet. The tests submit the returned token to a denied route:
-401 after passing CSRF demonstrates token acceptance, while missing/wrong-session
-tokens produce 403 `CSRF_INVALID`. No successful signup or login is implied.
+The cookie file contains session credentials; remove it when finished. Signup is
+the only permitted write endpoint and still requires the matching session and CSRF
+header. Security tests also submit the returned token to a denied route: 401 after
+passing CSRF demonstrates token acceptance without granting route permission.
+Missing/wrong-session tokens produce 403 `CSRF_INVALID`.
 
 Run the API and unit tests without database credentials:
 
@@ -114,8 +116,8 @@ database environment variables (`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`) and run
 
 Use `PasswordService.encodeNewPassword(rawPassword)` for new or changed passwords,
 and `PasswordService.matches(rawPassword, storedHash)` for verification. Never pass
-raw passwords to the user entity or repository. Signup/login endpoints do not yet
-exist; this milestone provides the components they will use.
+raw passwords to the user entity or repository. Signup uses these components;
+the login endpoint is deferred to its own milestone.
 
 New passwords must contain 12 to 128 Unicode code points. The 12-character minimum
 is a product tradeoff for lower signup friction; it is below NIST's 15-character
@@ -149,3 +151,78 @@ Password tests run without database variables:
 ```sh
 ./mvnw -Dtest=PasswordPolicyTests,PasswordServiceTests test
 ```
+
+# Account registration (milestone 8)
+
+`SignupRequest` accepts `email`, `password`, and optional `display_name`. Its record
+constructor trims the delivery email and supplied display name, but leaves the
+password untouched. Validation requires a nonblank, valid printable-ASCII email
+of at most 254 characters, the shared 12-128-code-point password policy, and an
+optional nonblank display name of at most 80 Unicode code points. Its `toString()`
+redacts all request fields. Custom constraints use the error handler's existing
+safe `INVALID_VALUE` fallback until a more specific public mapping is introduced.
+
+`RegistrationService.register` validates again at the service boundary, normalizes
+the account identifier with `EmailNormalizer`, and hashes the password for both new
+and duplicate submissions. It then invokes a separate `UserRegistrationWriter`
+bean, whose `@Transactional` method creates and flushes an unverified user with time
+from the injectable UTC `Clock`. No password or profile of an existing account is
+updated. No authentication is established and no email is sent.
+
+The coordinator uses `Propagation.NEVER` to reject ambient transactions. An email
+unique-constraint failure can therefore be handled only after the writer's own
+transaction has rolled back. Only MariaDB duplicate-key errors naming
+`uq_users_email_normalized` are treated as duplicates; other integrity/database
+failures propagate. The returned `SignupResponse` is always the same generic
+message for successful new/duplicate requests. Equal hash work reduces a timing
+discrepancy; it does not guarantee identical response times or replace rate limits.
+
+`AuthController` exposes POST `/api/v1/auth/signup` with `@Valid @RequestBody`.
+Only this exact POST route is permitted by the signup security rule; CSRF remains
+enabled. No new migration is required.
+
+After fetching GET `/api/v1/auth/csrf`, keep its session cookie and send the returned
+token using its `header_name` when posting JSON:
+
+```json
+{
+  "email": "learner@example.com",
+  "password": "a long example passphrase",
+  "display_name": "Learner"
+}
+```
+
+`display_name` may be omitted or null. A valid new or duplicate signup returns HTTP
+202 with `Cache-Control: no-store` and exactly this response:
+
+```json
+{"message":"Your signup request has been processed."}
+```
+
+The response does not confirm account existence, return account data, or claim an
+email was sent. Signup leaves the account unverified and does not log in the
+caller. Verification email delivery is deferred to milestone 10. Invalid fields
+return 400 `VALIDATION_FAILED`; missing/malformed JSON and unknown fields return
+400 `MALFORMED_REQUEST`. Missing, invalid, or mismatched-session CSRF tokens return
+403 `CSRF_INVALID` before registration runs. Unexpected database failures remain
+server errors rather than being reported as successful registration.
+
+Run DTO, coordinator, and HTTP/security tests without a database:
+
+```sh
+./mvnw -Dtest=SignupRequestTests,RegistrationServiceTests,AuthControllerTests test
+```
+
+With the development/test MariaDB variables set, test actual transaction rollback,
+concurrent case-variant signups, and persisted hashes/timestamps:
+
+```sh
+./mvnw -Dtest=RegistrationPersistenceTests,AuthControllerPersistenceTests test
+```
+
+These persistence tests exercise real commits rather than enclosing each test in
+a rollback transaction. They generate unique test email addresses and delete only
+their own accounts afterward. Run them against the designated development/test
+database. HTTP persistence tests run the actual MVC handlers, security filters,
+registration service, and database together, including simultaneous signups from
+different sessions. Full checks remain `./mvnw verify`.
