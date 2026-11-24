@@ -76,8 +76,13 @@ class AuthTokenPersistenceTests {
             var a = executor.submit(issue);
             var b = executor.submit(issue);
             start.countDown();
-            var first = find(a.get(30, TimeUnit.SECONDS));
-            var second = find(b.get(30, TimeUnit.SECONDS));
+            // Wait for BOTH transactions to commit before loading either row.
+            // Otherwise the first read can capture a still-active token just
+            // before the other worker expires it, leaving a stale Java object.
+            var firstIssued = a.get(30, TimeUnit.SECONDS);
+            var secondIssued = b.get(30, TimeUnit.SECONDS);
+            var first = find(firstIssued);
+            var second = find(secondIssued);
             Instant latest = first.getCreatedAt().isAfter(second.getCreatedAt())
                     ? first.getCreatedAt() : second.getCreatedAt();
             assertEquals(1, java.util.stream.Stream.of(first, second)
