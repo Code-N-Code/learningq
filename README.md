@@ -226,3 +226,75 @@ their own accounts afterward. Run them against the designated development/test
 database. HTTP persistence tests run the actual MVC handlers, security filters,
 registration service, and database together, including simultaneous signups from
 different sessions. Full checks remain `./mvnw verify`.
+
+# Authentication tokens (milestone 9)
+
+`V2__create_auth_tokens.sql` adds token UUIDs, a cascading user foreign key,
+purpose constraint, unique 32-byte SHA-256 hashes, UTC microsecond timestamps,
+and indexes for account/purpose and expiry. The existing V1 migration is unchanged.
+Flyway applies V2 on the next application startup against the configured database.
+
+`AuthTokenService.issue(userId, TokenPurpose)` locks the user row, expires earlier
+unused tokens for the same purpose, and inserts a fresh token within one
+transaction. It joins an existing transaction so later signup integration can
+commit the account and token together. Database errors roll back replacement too.
+Token consumption acquires the same user lock. Future credential operations must
+also acquire this lock before rechecking or modifying token state.
+
+`AuthTokenGenerator` generates 32 cryptographically random bytes and encodes them
+as unpadded URL-safe Base64. Only the SHA-256 digest is persisted. Issuance returns
+an internal `IssuedToken(rawToken, expiresAt)` with a redacted `toString()`; never
+log its raw value or deliver it before the transaction commits. Replaced tokens
+are expired, while `used_at` stays null because they were not consumed.
+
+Token lifetimes default to 24 hours for verification and 30 minutes for reset.
+Override `AUTH_VERIFICATION_TTL` / `AUTH_RESET_TTL`, or the corresponding
+`app.auth.verification-ttl` / `app.auth.reset-ttl` properties, using values such as
+`24h` and `30m`. Both must be at least 1ms; invalid settings fail at startup.
+
+`AuthTokenService.consume(rawToken, expectedPurpose)` returns the owning user UUID
+only after atomically marking a valid token used. It rejects malformed, unknown,
+wrong-purpose, expired (including exact expiry), replaced, or already-used tokens
+with the same `InvalidAuthTokenException`, without including the token in the
+message. It does not trim inputs. After locating the account by hash, it locks the
+user and reads the clock, then performs a conditional database UPDATE checking
+purpose, expiry and unused status. Exactly one updated row is required. This
+uses current database state rather than trusting an earlier transaction snapshot
+or a cached token entity, so concurrent submissions cannot both consume a token.
+
+Consumption uses `Propagation.MANDATORY`: call it from a different Spring-managed
+service's writable `@Transactional` method, and make the account change in that
+same transaction. Calling without a transaction fails. If the account change
+fails or the caller rolls back, consumption rolls back and the token remains
+usable. Do not catch and suppress token failures inside that transaction. Bulk
+token updates flush pending changes but keep the user's managed entity attached;
+previously loaded token entities may be stale and must not authorize operations.
+
+Signup does not issue tokens yet. There are no new public endpoints or emails,
+and CSRF handling is unchanged. HTTP mapping for the token exception belongs
+with the future verification/reset endpoints. No login is established by issuance
+or consumption.
+
+Run generation, issuance, and configuration tests without database credentials:
+
+```sh
+./mvnw -Dtest=AuthTokenGeneratorTests,AuthTokenServiceTests,AuthTokenPropertiesTests test
+```
+
+With the designated development/test MariaDB environment configured, run:
+
+```sh
+./mvnw -Dtest=AuthTokenPersistenceTests test
+```
+
+The persistence tests cover mappings, same-purpose replacement, purpose isolation,
+outer-transaction rollback, concurrent issuance, and cascading deletion. They
+create random test accounts and remove only those accounts. These tests require
+real MariaDB; unit tests alone do not verify the migration or database locks.
+
+Consumption was implemented after the issuance tests above. At the user's request,
+no additional tests were added or run for this change. Before marking milestone 9
+verified, check successful consumption, replay, malformed/unknown inputs, wrong
+purpose, expiry at the exact boundary, replacement, concurrent consumption,
+issuance racing with consumption, and rollback together with an account change.
+Run the full `./mvnw verify` against the designated development/test MariaDB.
